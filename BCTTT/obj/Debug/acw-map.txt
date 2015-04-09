@@ -1,1 +1,0 @@
-BCTTT.MainActivity;bcttt.MainActivity
