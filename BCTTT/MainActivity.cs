@@ -3,6 +3,8 @@ using System.Collections.Generic;
 
 using Android.App;
 using Android.Content;
+using Android.Net;
+using Android.Net.Wifi.P2p;
 using Android.Runtime;
 using Android.Util;
 using Android.Views;
@@ -107,9 +109,16 @@ namespace BCTTT
     [Activity (Label = "BCTTT", MainLauncher = true, Icon = "@drawable/icon")]
     public class MainActivity : Activity
     {
+        public const string Tag = "MainActivity";
+
         Game game = new Game();
         Dictionary<string, Button> buttons = new Dictionary<string, Button> ();
         TextView messageView;
+
+        private WifiP2pManager _manager;
+        private WifiP2pManager.Channel _channel;
+        private readonly IntentFilter _intentFilter = new IntentFilter();
+        private WiFiDirectBroadcastReceiver _receiver;
 
         protected override void OnCreate (Bundle bundle)
         {
@@ -117,6 +126,15 @@ namespace BCTTT
 
             // Set our view from the "main" layout resource
             SetContentView (Resource.Layout.Main);
+
+            _manager = (WifiP2pManager) GetSystemService (Activity.WifiP2pService);
+            _channel = _manager.Initialize(this, MainLooper, null);
+
+            // Set up the intent filter for the broadcast receiver
+            _intentFilter.AddAction(WifiP2pManager.WifiP2pStateChangedAction);
+            _intentFilter.AddAction(WifiP2pManager.WifiP2pPeersChangedAction);
+            _intentFilter.AddAction(WifiP2pManager.WifiP2pConnectionChangedAction);
+            _intentFilter.AddAction(WifiP2pManager.WifiP2pThisDeviceChangedAction);
 
             // Get our button from the layout resource,
             // and attach an event to it
@@ -142,6 +160,22 @@ namespace BCTTT
                 Log.Info ("BCTTT", string.Format ("button[{0}].Tag = {1}", k, buttons[k].Tag));
                 buttons [k].Click += ButtonClick;
             }
+        }
+
+        protected override void OnResume ()
+        {
+            base.OnResume ();
+
+            _receiver = new WiFiDirectBroadcastReceiver (_manager, _channel, this);
+            RegisterReceiver (_receiver, _intentFilter);
+
+            _manager.DiscoverPeers(_channel, null);
+        }
+        protected override void OnPause ()
+        {
+            base.OnPause ();
+
+            UnregisterReceiver (_receiver);
         }
 
         private void ButtonClick(object sender, EventArgs args) {
@@ -184,6 +218,93 @@ namespace BCTTT
                     else
                         buttons [h + "-" + v].Enabled = true;
                 }
+        }
+    }
+
+    public class PeerListListener : Java.Lang.Object, WifiP2pManager.IPeerListListener
+    {
+        public void OnPeersAvailable(WifiP2pDeviceList peers) {
+            Log.Info ("PeerListListener", "OnPeersAvailable called");
+            foreach (var peer in peers.DeviceList) {
+                Log.Debug ("PeerListListener", string.Format ("Found {0}", peer.DeviceName));
+            }
+        }
+    }
+
+
+    /// <summary>
+    /// A BroadcastReceiver that notifies of important wifi p2p events.
+    /// </summary>
+    public class WiFiDirectBroadcastReceiver : BroadcastReceiver
+    {
+        private readonly WifiP2pManager _manager;
+        private readonly WifiP2pManager.Channel _channel;
+        private readonly MainActivity _activity;
+        private readonly PeerListListener _listener = new PeerListListener();
+
+        /// <summary>
+        /// ctor
+        /// </summary>
+        /// <param name="manager">WifiP2pManager system service</param>
+        /// <param name="channel">Wifi p2p channel</param>
+        /// <param name="activity">activity associated with the receiver</param>
+        public WiFiDirectBroadcastReceiver(WifiP2pManager manager, WifiP2pManager.Channel channel,
+            MainActivity activity)
+        {
+            _manager = manager;
+            _channel = channel;
+            _activity = activity;
+        }
+
+        public override void OnReceive(Context context, Intent intent)
+        {
+            Log.Info ("BroadcastReceiver", "P2PBroadcastReceiver got " + intent);
+            var action = intent.Action;
+
+            if (WifiP2pManager.WifiP2pStateChangedAction.Equals(action))
+            {
+                // UI update to indicate wifi p2p status.
+                var state = intent.GetIntExtra(WifiP2pManager.ExtraWifiState, -1);
+                if (state == (int) WifiP2pState.Enabled) {
+                    // Wifi Direct mode is enabled
+                    //_activity.IsWifiP2PEnabled = true;
+                    Toast.MakeText(context, "WiFiDirect IS enabled", ToastLength.Short).Show();
+                }
+                else
+                {
+                    Toast.MakeText (context, "WiFiDirect is not enabled", ToastLength.Short).Show ();
+                }
+                Log.Debug(MainActivity.Tag, "P2P state changed - " + state);
+            }
+            else if (WifiP2pManager.WifiP2pPeersChangedAction.Equals(action))
+            {
+                // request available peers from the wifi p2p manager. This is an
+                // asynchronous call and the calling activity is notified with a
+                // callback on PeerListListener.onPeersAvailable()
+                _manager.RequestPeers (_channel, _listener);
+                Log.Debug(MainActivity.Tag, "P2P peers changed");
+            }
+            else if (WifiP2pManager.WifiP2pConnectionChangedAction.Equals(action))
+            {
+                if (_manager == null)
+                    return;
+
+                var networkInfo = (NetworkInfo) intent.GetParcelableExtra(WifiP2pManager.ExtraNetworkInfo);
+
+                if (networkInfo.IsConnected)
+                {
+                    // we are connected with the other device, request connection
+                    // info to find group owner IP
+                    //var fragment =
+                    //    _activity.FragmentManager.FindFragmentById<DeviceDetailFragment>(Resource.Id.frag_detail);
+                    //_manager.RequestConnectionInfo(_channel, fragment);
+                }
+                else
+                {
+                    // It's a disconnect
+                    //_activity.ResetData();
+                }
+            }
         }
     }
 }
